@@ -76,7 +76,7 @@ async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle unknown commands."""
-    await context.bot.send_message(chat_id=update.effective_chat.id, text="I AM ERROR")
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="Just message normally to use.")
 
 
 def main() -> None:
