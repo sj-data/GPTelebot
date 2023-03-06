@@ -29,7 +29,7 @@ The chatbot uses the OpenAI GPT-3.5 Turbo model to generate responses, so it sho
 
 ## Limitations
 
-This is designed to be used with as many instances as required. It connects each user chat history to their group or account using a dictionary of lists. If you wanted to use this method to deploy for large scale production you would likely need to replace this with a database.
+This is designed to be used with as many instances as required. It connects each user chat history to their group or account using nested dictionaries. If you wanted to use this method to deploy for large scale production you would likely need to replace this with a database.
 
 ## Variables
 
