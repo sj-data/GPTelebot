@@ -3,17 +3,23 @@
 
 import logging
 import os
+from datetime import datetime
 
+import psycopg2
 import openai
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, CommandHandler, filters
 
+
 # Constants and configuration values
 OPENAI_MODEL = "gpt-3.5-turbo"
 MAX_TOKENS = 128
-MAX_LOG = 10  # How many messages will be "Remembered", Keep even number
+MAX_LOG = 4  # How many messages will be "Remembered", Keep even number
 
+Alinks = [{'NVMe SSD': 'https://amzn.to/40gnHqz', 'USB Keyboard': 'https://amzn.to/3ZzT0MS',
+           'Portable SSD': 'https://amzn.to/3YFPjEe', '3060 GPU': 'https://amzn.to/3JaB2td',
+           'usb hub': 'https://amzn.to/3mA1Ewa'}]
 
 global respond_enabled
 respond_enabled = False
@@ -41,6 +47,24 @@ logging.basicConfig(
     level=logging.INFO,
 )
 
+
+def insert_user_message(conn, message, response_message):
+    """Insert user message into PostgreSQL database."""
+    cur = conn.cursor()
+
+    user_id = message.from_user.id
+    username = message.from_user.username
+    message_text = message.text
+    bot_response = response_message  # store the bot response in a variable
+    timestamp = datetime.now()
+
+    insert_query = """
+        INSERT INTO messages (user_id, username, message, bot_response, timestamp)
+        VALUES (%s, %s, %s, %s, %s)
+    """
+    cur.execute(insert_query, (user_id, username, message_text, bot_response, timestamp))
+
+    conn.commit()
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a welcome message to the user."""
     global respond_enabled
@@ -82,9 +106,10 @@ async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         messages=[
                      {"role": "system",
                       "content": f"You are a bot designed to answer questions for {name} and share the Amazon "
-                                 f"affiliate link 'https://amzn.to/3KW"},
-                     {"role": "user", "content": "Where is Paris?"},
-                     {"role": "assistant", "content": f"Paris is in France {name}."},
+                                 f"the affiliate links in this list as frequently as possible:{Alinks}. Do not change the links!"
+                                 f"Do not send links not in the list!"},
+                     {"role": "user", "content": "What's the best NVMe SSD deal?"},
+                     {"role": "assistant", "content": f"Check out the SAMSUNG 980 https://amzn.to/40gnHqz"},
                      {"role": "user", "content": f"{user_message}"}
                  ] + unique_messages,
         max_tokens=MAX_TOKENS,
@@ -95,13 +120,16 @@ async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     response_message_obj = {"role": "assistant", "content": response_message}
     messages_dict.setdefault(chat_id, []).append(response_message_obj)
 
+    # Insert the user message and bot response into the database
+    with psycopg2.connect(
+        host=os.getenv("DATABASE_HOST"),
+        database=os.getenv("DATABASE_NAME"),
+        user=os.getenv("DATABASE_USER"),
+        password=os.getenv("DATABASE_PASSWORD")
+    ) as conn:
+        insert_user_message(conn, update.message, response_message)
     # Send the response to the user
     await context.bot.send_message(chat_id=chat_id, text=response_message)
-
-
-async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle unknown commands."""
-    await context.bot.send_message(chat_id=update.effective_chat.id, text="Just message normally to use.")
 
 
 def main() -> None:
@@ -112,9 +140,7 @@ def main() -> None:
     application = ApplicationBuilder().token(os.getenv("TELEGRAM_TOKEN")).build()
 
     # Add handlers for commands and messages
-    #unknown_handler = MessageHandler(filters.COMMAND, unknown)
     response_handler = MessageHandler(filters.TEXT, respond)
-    #application.add_handler(unknown_handler)
     application.add_handler(CommandHandler("start", start))
     application.add_handler(response_handler)
 
