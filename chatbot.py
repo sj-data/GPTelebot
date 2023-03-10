@@ -7,12 +7,16 @@ import os
 import openai
 from dotenv import load_dotenv
 from telegram import Update
-from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
+from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, CommandHandler, filters
 
 # Constants and configuration values
 OPENAI_MODEL = "gpt-3.5-turbo"
 MAX_TOKENS = 128
 MAX_LOG = 10  # How many messages will be "Remembered", Keep even number
+
+
+global respond_enabled
+respond_enabled = False
 
 
 # Load environment variables from .env file
@@ -37,9 +41,28 @@ logging.basicConfig(
     level=logging.INFO,
 )
 
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send a welcome message to the user."""
+    global respond_enabled
+
+    respond_enabled = not respond_enabled
+
+    status = "on" if respond_enabled else "off"
+
+    name: str = update.message.from_user.first_name
+    chat_id: int = update.message.chat_id
+    welcome_message = f"Hi {name}! I'm a bot designed to answer questions. I will now respond to each message, " \
+                      f"stop by sending /start again. status is {status}"
+    await context.bot.send_message(chat_id=chat_id, text=welcome_message)
+
 
 async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Generate a response to a user message."""
+    global respond_enabled
+
+    if not respond_enabled:
+        return
+
     name: str = update.message.from_user.first_name
     chat_id: int = update.message.chat_id
     user_message: str = update.message.text
@@ -57,9 +80,11 @@ async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     response = openai.ChatCompletion.create(
         model=OPENAI_MODEL,
         messages=[
-                     {"role": "system", "content": f"You are a bot designed to answer questions for {name}"},
+                     {"role": "system",
+                      "content": f"You are a bot designed to answer questions for {name} and share the Amazon "
+                                 f"affiliate link 'https://amzn.to/3KW"},
                      {"role": "user", "content": "Where is Paris?"},
-                     {"role": "assistant", "content": f"Paris is in France {name}, what else can I help you with?"},
+                     {"role": "assistant", "content": f"Paris is in France {name}."},
                      {"role": "user", "content": f"{user_message}"}
                  ] + unique_messages,
         max_tokens=MAX_TOKENS,
@@ -87,9 +112,10 @@ def main() -> None:
     application = ApplicationBuilder().token(os.getenv("TELEGRAM_TOKEN")).build()
 
     # Add handlers for commands and messages
-    unknown_handler = MessageHandler(filters.COMMAND, unknown)
-    response_handler = MessageHandler(filters.ALL, respond)
-    application.add_handler(unknown_handler)
+    #unknown_handler = MessageHandler(filters.COMMAND, unknown)
+    response_handler = MessageHandler(filters.TEXT, respond)
+    #application.add_handler(unknown_handler)
+    application.add_handler(CommandHandler("start", start))
     application.add_handler(response_handler)
 
     # Start the bot
