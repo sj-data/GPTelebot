@@ -14,6 +14,7 @@ from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, Comma
 
 load_dotenv()
 
+
 conn = psycopg2.connect(
     host=os.getenv("DATABASE_HOST"),
     database=os.getenv("DATABASE_NAME"),
@@ -38,9 +39,6 @@ def configure() -> None:
         raise ValueError("TELEGRAM_TOKEN environment variable is not set")
 
 
-# Keep track of messages for each chat
-messages_dict = {}
-
 # Configure logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -48,22 +46,23 @@ logging.basicConfig(
 )
 
 
-def get_user_status(conn, user_id):
+def get_chat_status(conn, chat_id):
     """Get the user's current status from the database."""
     cur = conn.cursor()
-    query = sql.SQL("SELECT respond_enabled FROM messages WHERE user_id = %s")
-    cur.execute(query, (user_id,))
+    query = sql.SQL("SELECT respond_enabled FROM messages WHERE chat_id = %s")
+    cur.execute(query, (chat_id,))
     result = cur.fetchone()
     if result is None:
         return False
     return result[0]
 
+
 def insert_user_message(conn, message, response_message):
     """Insert user message into PostgreSQL database."""
     cur = conn.cursor()
 
-    user_id = message.from_user.id
-    username = message.from_user.username
+    chat_id = message.chat.id
+    username = message.from_user.username or ''
     message_text = message.text
     bot_response = response_message  # store the bot response in a variable
     timestamp = datetime.now()
@@ -72,7 +71,7 @@ def insert_user_message(conn, message, response_message):
         INSERT INTO messages (user_id, username, message, bot_response, timestamp)
         VALUES (%s, %s, %s, %s, %s)
     """
-    cur.execute(insert_query, (user_id, username, message_text, bot_response, timestamp))
+    cur.execute(insert_query, (chat_id, username, message_text, bot_response, timestamp))
 
     conn.commit()
 
@@ -80,16 +79,30 @@ def insert_user_message(conn, message, response_message):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a welcome message to the user."""
     user_id = update.message.from_user.id
-    chat_id = update.message.chat_id
+    chat_id = update.message.chat.id
     name = update.message.from_user.first_name
 
-    current_status = get_user_status(conn, user_id)
+    current_status = get_chat_status(conn, chat_id)
     new_status = not current_status
 
     with conn:
         with conn.cursor() as cur:
-            query = sql.SQL("UPDATE messages SET respond_enabled = %s WHERE user_id = %s")
-            cur.execute(query, (new_status, user_id))
+            # Check if the chat already exists in the messages table
+            query = sql.SQL("SELECT respond_enabled FROM messages WHERE chat_id = %s")
+            cur.execute(query, (chat_id,))
+            row = cur.fetchone()
+
+            if row is None:
+                # Chat doesn't exist in the table, insert a new row
+                insert_query = """
+                    INSERT INTO messages (chat_id, user_id, username, respond_enabled)
+                    VALUES (%s, %s, %s, %s)
+                """
+                cur.execute(insert_query, (chat_id, user_id, name, new_status))
+            else:
+                # Chat exists in the table, update the respond_enabled field
+                query = sql.SQL("UPDATE messages SET respond_enabled = %s WHERE chat_id = %s")
+                cur.execute(query, (new_status, chat_id))
 
     status = "on" if new_status else "off"
     welcome_message = f"Hi {name}! I'm a bot designed to answer questions. I will now respond to each message, " \
@@ -100,54 +113,52 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a goodbye message to the user."""
     user_id = update.message.from_user.id
-    chat_id = update.message.chat_id
+    chat_id = update.message.chat.id
     name = update.message.from_user.first_name
 
-    current_status = get_user_status(conn, user_id)
+    status = "off"
     new_status = False
 
     with conn:
         with conn.cursor() as cur:
-            query = sql.SQL("UPDATE messages SET respond_enabled = %s WHERE user_id = %s")
-            cur.execute(query, (new_status, user_id))
+            # Check if the chat already exists in the messages table
+            query = sql.SQL("SELECT respond_enabled FROM messages WHERE chat_id = %s")
+            cur.execute(query, (chat_id,))
+            row = cur.fetchone()
+
+            if row is None:
+                # Chat doesn't exist in the table, insert a new row
+                insert_query = """
+                    INSERT INTO messages (chat_id, user_id, username, respond_enabled)
+                    VALUES (%s, %s, %s, %s)
+                """
+                cur.execute(insert_query, (chat_id, user_id, name, new_status))
+            else:
+                # Chat exists in the table, update the respond_enabled field
+                query = sql.SQL("UPDATE messages SET respond_enabled = %s WHERE chat_id = %s")
+                cur.execute(query, (new_status, chat_id))
 
     goodbye_message = f"Bye {name}! I will no longer respond to your messages. " \
-                      f"Send /start to start the bot again."
+                      f"Send /start to start the bot again. Status is {status}"
     await context.bot.send_message(chat_id=chat_id, text=goodbye_message)
+
 
 async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Generate a response to a user message."""
-    user_id = update.message.from_user.id
-    chat_id = update.message.chat_id
-    message_text = update.message.text
+    chat_id = update.message.chat.id
 
-    with psycopg2.connect(
-            host=os.getenv("DATABASE_HOST"),
-            database=os.getenv("DATABASE_NAME"),
-            user=os.getenv("DATABASE_USER"),
-            password=os.getenv("DATABASE_PASSWORD")
-    ) as conn:
+    with conn:
         with conn.cursor() as cur:
-            query = sql.SQL("SELECT respond_enabled FROM messages WHERE user_id = %s")
-            cur.execute(query, (user_id,))
+            query = sql.SQL("SELECT respond_enabled FROM messages WHERE chat_id = %s")
+            cur.execute(query, (chat_id,))
             row = cur.fetchone()
 
             if row is None or not row[0]:
-                # respond_enabled is False for this user
+                # respond_enabled is False for this chat
                 return
 
-    name: str = update.message.from_user.first_name
-    chat_id: int = update.message.chat_id
-    user_message: str = update.message.text
-
-    # Add the message to the list for the current chat, remove old messages
-    latest_message = {"role": "user", "content": user_message}
-    messages_dict.setdefault(chat_id, []).append(latest_message)
-    if len(messages_dict.get(chat_id, [])) >= MAX_LOG:
-        messages_dict[chat_id] = messages_dict[chat_id][2:]
-
-    # Retrieve the unique message for the current chat
-    unique_messages = messages_dict.get(chat_id, [])
+    name = update.message.from_user.first_name
+    user_message = update.message.text
 
     # Call OpenAI to generate a response
     response = openai.ChatCompletion.create(
@@ -155,19 +166,18 @@ async def respond(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         messages=[
                      {"role": "system",
                       "content": f"You are a bot designed to answer questions for {name} and share the Amazon "
-                                 f"the affiliate links in this list as frequently as possible:{Alinks}. Do not change the links!"
+                                 f"the affiliate links in this list as frequently as possible:{[Alinks]}. Do not change the links!"
                                  f"Do not send links not in the list!"},
                      {"role": "user", "content": "What's the best NVMe SSD deal?"},
                      {"role": "assistant", "content": f"Check out the SAMSUNG 980 https://amzn.to/40gnHqz"},
                      {"role": "user", "content": f"{user_message}"}
-                 ] + unique_messages,
+                 ],
         max_tokens=MAX_TOKENS,
     )
 
     # Extract the response message from the OpenAI response
     response_message = response["choices"][0]["message"]["content"]
     response_message_obj = {"role": "assistant", "content": response_message}
-    messages_dict.setdefault(chat_id, []).append(response_message_obj)
 
     # Insert the user message and bot response into the database
     with conn:
